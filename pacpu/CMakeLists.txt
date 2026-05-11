@@ -9,8 +9,8 @@ set(ISPC_SRC_NAME pacpu)
 set(ISPC_FLAGS "-O3" "--opt=fast-math")
 set(TARGET_SOURCES "pacpu.cpp" "pacpu.ispc")
 
-set(ISPC_ARCH "x86-64")
-set(ISPC_ARCH_BIT "64")
+set(ISPC_ARCH "aarch64")
+set(ISPC_TARGETS "neon-i32x4")
 
 # Set a small number here, we don't actually compile any CUDA kernels
 set(CMAKE_CUDA_ARCHITECTURES 70)
@@ -25,10 +25,10 @@ function(target_add_common_options target model_name tp_degree)
   target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:ISPC>:${ISPC_FLAGS}>)
   target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:ISPC>:--arch=${ISPC_ARCH}>)
 
-  set(arch_flag "-m${ISPC_ARCH_BIT}")
+#  set(arch_flag "-m${ISPC_ARCH_BIT}")
   target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:-Ofast -march=native>)
   target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:-fopenmp>)
-  target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:${arch_flag}>)
+#  target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:${arch_flag}>)
   string(TOUPPER ${model_name} MODEL_NAME)
   string(TOUPPER ${tp_degree} TP_DEGREE)
   target_compile_definitions(${target} PRIVATE "${MODEL_NAME}" TP_DEGREE=${TP_DEGREE})
@@ -48,7 +48,18 @@ function(gen_torch_lib model_name tp_degree)
 endfunction()
 
 if (GEN_TORCH_LIBRARY)
-  find_package(Torch REQUIRED)
+  
+# --- CRITICAL PATCH FOR CUDA 12.9 NVTX ---
+set(LIBNVTOOLSEXT "/usr/local/cuda/lib64/libcudart.so" CACHE FILEPATH "nvtools" FORCE)
+if(NOT TARGET CUDA::nvToolsExt)
+    add_library(CUDA::nvToolsExt UNKNOWN IMPORTED)
+    set_target_properties(CUDA::nvToolsExt PROPERTIES
+        IMPORTED_LOCATION "/usr/local/cuda/lib64/libcudart.so"
+        INTERFACE_INCLUDE_DIRECTORIES "/usr/local/cuda/include"
+    )
+endif()
+# -----------------------------------------
+find_package(Torch REQUIRED)
   # set(CMAKE_CXX_FLAGS "-Ofast -march=native ${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
   # Create library, Model and TP should be pass as arguments
