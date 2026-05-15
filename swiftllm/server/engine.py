@@ -90,6 +90,7 @@ class AsyncEngine(Engine):
         self.tokenization_engine = None
 
         self.untokenized_raw_requests: list[tuple[Request, str]] = []
+        self._main_loop_last_log = 0.0
         
 
     async def _run_on_model_executor_async(self, func, *args, **kwargs):
@@ -190,26 +191,74 @@ class AsyncEngine(Engine):
         """
         Event loop for forwarding the model
         """
+        logger.info("Main event loop started")
         while True:
-            # Get the next batch from the scheduler
-            batches, cur_swap_out, cur_swap_in = self.scheduler.get_next_batch()
-            if not (len(batches) or len(cur_swap_in) or len(cur_swap_out)):
-                # Nothing to do, sleep for a bit
-                await asyncio.sleep(0.001)
-                continue
+            try:
+                # Get the next batch from the scheduler
+                now = time.monotonic()
+                if now - self._main_loop_last_log > 5.0:
+                    self._main_loop_last_log = now
+                    logger.info("Main loop polling scheduler")
+                batches, cur_swap_out, cur_swap_in = self.scheduler.get_next_batch()
+                if now - self._main_loop_last_log > 5.0:
+                    self._main_loop_last_log = now
+                    logger.info(
+                        "Scheduler returned: batches=%d swap_out=%d swap_in=%d",
+                        len(batches),
+                        len(cur_swap_out),
+                        len(cur_swap_in),
+                    )
+                if not (len(batches) or len(cur_swap_in) or len(cur_swap_out)):
+                    # Nothing to do, sleep for a bit
+                    if now - self._main_loop_last_log > 5.0:
+                        self._main_loop_last_log = now
+                        logger.info(
+                            "Main loop idle: waiting=%d gpu_dec=%d cpu_dec=%d",
+                            len(self.scheduler.waiting_q),
+                            len(self.scheduler.gpu_decoding_q),
+                            len(self.scheduler.cpu_decoding_q),
+                        )
+                    await asyncio.sleep(0.001)
+                    continue
 
-            # Prepare model forward arguments
-            forward_args = self.block_manager.prepare(batches, cur_swap_out, cur_swap_in)
-            
-            # Forward the model
-            if any(b.num_prefs for b in batches):
-                logger.info(f"Forwarding batches with sizes {[(b.num_cprfs, b.num_gprfs, b.num_gdecs, b.num_cdecs) for b in batches]}, "
-                            f"swap out: {len(cur_swap_out)}, swap in: {len(cur_swap_in)}")
-            output_token_ids = await self._run_on_model_executor_async(self.executor.do_one_iteration, batches, *forward_args)
+                # Prepare model forward arguments
+                batch_shapes = []
+                for batch in batches:
+                    if hasattr(batch, "num_cprfs"):
+                        batch_shapes.append((batch.num_cprfs, batch.num_gprfs, batch.num_gdecs, batch.num_cdecs))
+                    else:
+                        batch_shapes.append((len(batch.cprf_reqs), len(batch.gprf_reqs), len(batch.gdec_reqs), len(batch.cdec_reqs)))
 
-            # Deal with output tokens
-            finished_reqs = self.block_manager.update_and_free(batches, output_token_ids)
-            self.scheduler.remove_finished_requests(finished_reqs)
+                # NOTE: block_manager.prepare() calls batch.set_model_forward_args(),
+                # which removes perf-related fields from SubBatch (e.g. perfdata).
+                # Determine whether there is model work before prepare mutates batch objects.
+                has_work = any(
+                    len(batch.cprf_reqs) + len(batch.gprf_reqs) + len(batch.gdec_reqs) + len(batch.cdec_reqs) > 0
+                    for batch in batches
+                )
+
+                forward_args = self.block_manager.prepare(batches, cur_swap_out, cur_swap_in)
+
+                # Forward the model only if there are requests in the current batches
+                if has_work:
+                    logger.info(
+                        "Forwarding batches with sizes %s, swap out: %d, swap in: %d",
+                        batch_shapes,
+                        len(cur_swap_out),
+                        len(cur_swap_in),
+                    )
+                output_token_ids = await self._run_on_model_executor_async(
+                    self.executor.do_one_iteration,
+                    batches,
+                    *forward_args,
+                )
+
+                # Deal with output tokens
+                finished_reqs = self.block_manager.update_and_free(batches, output_token_ids)
+                self.scheduler.remove_finished_requests(finished_reqs)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Main event loop error: %s", exc)
+                raise
     
 
     async def start_all_event_loops(self):

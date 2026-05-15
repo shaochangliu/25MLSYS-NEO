@@ -3,6 +3,7 @@ Transformer layer utilities in the Llama model
 """
 
 import time
+import logging
 import torch
 import torch.distributed as dist
 import vllm_flash_attn_2_cuda as flash_attn_cuda
@@ -29,6 +30,8 @@ from swiftllm.worker.kernels.linear import linear
 # from swiftllm.worker.kernels.rmsnorm import fused_add_rmsnorm_inplace
 from swiftllm.worker.kernels.paged_attn import paged_attention
 from swiftllm.worker.kernels.prefill_attn import prefill_attention
+
+logger = logging.getLogger(__name__)
 
 class TransformerEvents:
     """
@@ -330,6 +333,13 @@ class LlamaTransformerLayer:
                 
         if batch.num_cdecs > 0:
             oc = self.swapper.o_cpu[:batch.num_cdecs]
+            start_ms = time.perf_counter() * 1e3
+            logger.info(
+                "CPU cdec begin: layer=%d, num_cdecs=%d, seq_lens_tail=%s",
+                cur_layer_id,
+                batch.num_cdecs,
+                batch.seq_lens_list[batch.num_prgds:batch.num_prgds + min(4, batch.num_cdecs)],
+            )
             events.pf_time("lnch_m")
             self.events[cur_stage].qkvtr_e.synchronize()
             events.pf_time("cdec_s")
@@ -348,6 +358,13 @@ class LlamaTransformerLayer:
                 oc
             )
             events.pf_time("cdec_e")
+            end_ms = time.perf_counter() * 1e3
+            logger.info(
+                "CPU cdec end: layer=%d, num_cdecs=%d, dur_ms=%.3f",
+                cur_layer_id,
+                batch.num_cdecs,
+                end_ms - start_ms,
+            )
             with torch.cuda.stream(self.cpu_communication_stream):
                 o[-batch.num_cdecs:, :].copy_(oc, non_blocking=True)
         else:
