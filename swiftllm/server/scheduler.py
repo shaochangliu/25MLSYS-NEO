@@ -229,10 +229,8 @@ class Scheduler:
         # print(f"Sequential time: {seqential_time}, Pipelined time: {pipelined_time}")
         # print(f"Sequential rate: {seqential_rate}, Pipelined rate: {pipelined_rate}")
         if seqential_rate < pipelined_rate:
-            logger.info("_decide_mode_and_gen_batch: choose pipelined")
             return batches
         else:
-            logger.info("_decide_mode_and_gen_batch: choose sequential")
             return [gpu_only_batch]
         # return [gpu_only_batch]
 
@@ -260,7 +258,6 @@ class Scheduler:
         
         # Step 1: Try to launch as many GPU decoding requests as possible
         gpu_block_needed = sum(self._get_block_needed(req) for req in self.gpu_decoding_q)
-        self.num_decoding_gpu_blocks = gpu_block_needed  # Track actual GPU blocks used by decoding
         budget.remaining_batch_size -= len(self.gpu_decoding_q)
         budget.remaining_tokens_in_batch -= len(self.gpu_decoding_q)
 
@@ -300,14 +297,6 @@ class Scheduler:
             # 1. We prefer to put a sequence into GPU.
             # 2. If the GPU is full, we put the sequence into CPU.
             # 3. For fairness, if some earlier sequences are in CPU, we should put the later sequences into CPU.
-            
-            # Check if GPU actually has enough free blocks before committing any prefill
-            # (Both GPU and CPU prefills store KV cache on GPU, so both need to check free blocks)
-            num_gpu_free_blocks = self.num_gpu_blocks - self.num_decoding_gpu_blocks
-            if cur_block_needed > num_gpu_free_blocks:
-                # Not enough free blocks; stop accepting new prefills and wait
-                break
-            
             if not pref_to_cpu and gpu_block_needed + cur_block_needed <= self.num_gpu_blocks:
                 gpu_block_needed += cur_block_needed
                 pref_to_gpu.append(candidate)
