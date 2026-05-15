@@ -67,6 +67,10 @@ def build_engine_config(
     num_gpu_blocks_override: int = -1,
     swap_space: int = 20,
     max_tokens_in_batch: int,
+    max_batch_size: int = -1,
+    max_seqs_in_block_table: int = -1,
+    max_blocks_per_seq: int = -1,
+    extra_layer_for_cprf: bool = False,
     library_path: str | None = None,
     tensor_parallel_degree: int = 1,
 ) -> swiftllm.EngineConfig:
@@ -77,7 +81,13 @@ def build_engine_config(
             f"input_len + output_len = {max_seq_len} exceeds max_model_len = {model_config.max_position_embeddings}"
         )
 
-    max_blocks_per_seq = math.ceil(max_seq_len / block_size)
+    # Use provided values or compute defaults
+    if max_blocks_per_seq <= 0:
+        max_blocks_per_seq = math.ceil(max_seq_len / block_size)
+    if max_batch_size <= 0:
+        max_batch_size = min(256, num_prompts)
+    if max_seqs_in_block_table <= 0:
+        max_seqs_in_block_table = num_prompts
 
     library_path = infer_library_path(model_path, library_path)
 
@@ -88,16 +98,16 @@ def build_engine_config(
         gpu_mem_utilization=gpu_mem_utilization,
         num_gpu_blocks_override=num_gpu_blocks_override,
         swap_space=swap_space,
-        max_seqs_in_block_table=num_prompts,
+        max_seqs_in_block_table=max_seqs_in_block_table,
         max_blocks_per_seq=max_blocks_per_seq,
-        max_batch_size=min(256, num_prompts),
+        max_batch_size=max_batch_size,
         max_tokens_in_batch=max_tokens_in_batch,
         library_path=library_path,
         profile_result_path=profile_dir,
         tensor_parallel_degree=tensor_parallel_degree,
         disable_partial_offl=False,
         always_use_gpu=False,
-        extra_layer_for_cprf=False,
+        extra_layer_for_cprf=extra_layer_for_cprf,
     )
 
 
@@ -155,6 +165,10 @@ async def run_case(
     num_gpu_blocks_override: int = -1,
     swap_space: int = 20,
     max_tokens_in_batch: int,
+    max_batch_size: int = -1,
+    max_seqs_in_block_table: int = -1,
+    max_blocks_per_seq: int = -1,
+    extra_layer_for_cprf: bool = False,
     tensor_parallel_degree: int = 1,
 ) -> dict:
     profile_dir = os.path.join(neo_dir, "profile_results") + os.sep
@@ -170,6 +184,10 @@ async def run_case(
         num_gpu_blocks_override=num_gpu_blocks_override,
         swap_space=swap_space,
         max_tokens_in_batch=max_tokens_in_batch,
+        max_batch_size=max_batch_size,
+        max_seqs_in_block_table=max_seqs_in_block_table,
+        max_blocks_per_seq=max_blocks_per_seq,
+        extra_layer_for_cprf=extra_layer_for_cprf,
         library_path=library_path,
         tensor_parallel_degree=tensor_parallel_degree,
     )
@@ -231,9 +249,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, default=None, help="Optional NEO evaluation config file for overrides")
     parser.add_argument("--block-size", type=int, default=16, help="PagedAttention block size (keep the same as NEO paper)")
     parser.add_argument("--max-tokens-in-batch", type=int, default=2048, help="User-provided token budget per NEO batch (keep the same as llama.cpp)")
+    parser.add_argument("--max-batch-size", type=int, default=-1, help="Max batch size per iteration (default: min(256, num_prompts))")
+    parser.add_argument("--max-seqs-in-block-table", type=int, default=-1, help="Max sequences in block table (default: num_prompts)")
+    parser.add_argument("--max-blocks-per-seq", type=int, default=-1, help="Max blocks per sequence (default: computed from input_len + output_len)")
     parser.add_argument("--gpu-mem-utilization", type=float, default=0.99, help="Primary memory budget knob for inference")
     parser.add_argument("--num-gpu-blocks-override", type=int, default=-1, help="Optional override for the profiled GPU block count")
     parser.add_argument("--swap-space", type=int, default=20, help="Swap space in GB")
+    parser.add_argument("--extra-layer-for-cprf", action="store_true", help="Enable extra layer for CPU prefills")
     parser.add_argument("--library-path", type=str, default=None, help="Override CPU kernel library path from config")
     parser.add_argument("--output-json", type=str, default=None, help="Optional path to save the benchmark summary as JSON")
     return parser.parse_args()
@@ -263,6 +285,10 @@ async def main() -> int:
         library_path=args.library_path,
         block_size=args.block_size,
         max_tokens_in_batch=args.max_tokens_in_batch,
+        max_batch_size=args.max_batch_size,
+        max_seqs_in_block_table=args.max_seqs_in_block_table,
+        max_blocks_per_seq=args.max_blocks_per_seq,
+        extra_layer_for_cprf=args.extra_layer_for_cprf,
         gpu_mem_utilization=args.gpu_mem_utilization,
         num_gpu_blocks_override=args.num_gpu_blocks_override,
         swap_space=args.swap_space,
