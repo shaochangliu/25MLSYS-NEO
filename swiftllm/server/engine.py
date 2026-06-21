@@ -90,7 +90,24 @@ class AsyncEngine(Engine):
         self.tokenization_engine = None
 
         self.untokenized_raw_requests: list[tuple[Request, str]] = []
-        self._main_loop_last_log = 0.0
+        self._active_requests: set[Request] = set() # only used for diagnose, not impact main loop logic
+        self._main_loop_last_poll_log = 0.0
+        self._main_loop_last_idle_log = 0.0
+
+
+    def _format_active_requests(
+        self,
+        requests: list[Request] | None=None,
+        limit: int=8
+    ) -> list[tuple[int, int, int, int]]:
+        """
+        Return a compact snapshot of requests that are still waiting to finish.
+        """
+        requests = requests or list(self._active_requests)
+        return [
+            (req.request_id, req.prompt_len, req.output_len, req.max_output_len)
+            for req in requests[:limit]
+        ]
         
 
     async def _run_on_model_executor_async(self, func, *args, **kwargs):
@@ -128,13 +145,17 @@ class AsyncEngine(Engine):
         Add a raw request to the engine and stream the output of the request (streaming mode)
         """
         request = Request(raw_request)
-        self.untokenized_raw_requests.append((request, raw_request.prompt))
-        while True:
-            step_output = await request.output_q.get()
-            yield step_output
-            request.output_q.task_done()
-            if step_output.request.is_finished():
-                break
+        self._active_requests.add(request)
+        try:
+            self.untokenized_raw_requests.append((request, raw_request.prompt))
+            while True:
+                step_output = await request.output_q.get()
+                yield step_output
+                request.output_q.task_done()
+                if step_output.request.is_finished():
+                    break
+        finally:
+            self._active_requests.discard(request)
     
     
     async def add_request_and_wait(self, raw_request: RawRequest) -> tuple[Request, list[int]]:
@@ -144,18 +165,22 @@ class AsyncEngine(Engine):
         Return the output token ids
         """
         request = Request(raw_request)
-        if isinstance(raw_request.prompt, str):
-            self.untokenized_raw_requests.append((request, raw_request.prompt))
-        else:
-            # Already tokenized, directly add to the scheduler
-            request.prompt_token_ids = raw_request.prompt
-            request.prompt_len = len(raw_request.prompt)
-            assert request.prompt_len + request.max_output_len <= self.engine_config.max_seq_len, \
-                f"Request length {request.prompt_len + request.output_len} exceeds max_seq_len {self.engine_config.max_seq_len}"
-            self.scheduler.on_requests_arrival([request])
+        self._active_requests.add(request)
+        try:
+            if isinstance(raw_request.prompt, str):
+                self.untokenized_raw_requests.append((request, raw_request.prompt))
+            else:
+                # Already tokenized, directly add to the scheduler
+                request.prompt_token_ids = raw_request.prompt
+                request.prompt_len = len(raw_request.prompt)
+                assert request.prompt_len + request.max_output_len <= self.engine_config.max_seq_len, \
+                    f"Request length {request.prompt_len + request.output_len} exceeds max_seq_len {self.engine_config.max_seq_len}"
+                self.scheduler.on_requests_arrival([request])
 
-        await request.finished_event.wait()
-        return (request, request.output_token_ids)
+            await request.finished_event.wait()
+            return (request, request.output_token_ids)
+        finally:
+            self._active_requests.discard(request)
     
 
     async def _tokenize_raw_request_event_loop(self):
@@ -196,12 +221,12 @@ class AsyncEngine(Engine):
             try:
                 # Get the next batch from the scheduler
                 now = time.monotonic()
-                if now - self._main_loop_last_log > 5.0:
-                    self._main_loop_last_log = now
+                if now - self._main_loop_last_poll_log > 5.0:
+                    self._main_loop_last_poll_log = now
                     logger.info("Main loop polling scheduler")
                 batches, cur_swap_out, cur_swap_in = self.scheduler.get_next_batch()
-                if now - self._main_loop_last_log > 5.0:
-                    self._main_loop_last_log = now
+                if now - self._main_loop_last_poll_log > 5.0:
+                    self._main_loop_last_poll_log = now
                     logger.info(
                         "Scheduler returned: batches=%d swap_out=%d swap_in=%d",
                         len(batches),
@@ -210,13 +235,31 @@ class AsyncEngine(Engine):
                     )
                 if not (len(batches) or len(cur_swap_in) or len(cur_swap_out)):
                     # Nothing to do, sleep for a bit
-                    if now - self._main_loop_last_log > 5.0:
-                        self._main_loop_last_log = now
+                    waiting = len(self.scheduler.waiting_q)
+                    gpu_decoding = len(self.scheduler.gpu_decoding_q)
+                    cpu_decoding = len(self.scheduler.cpu_decoding_q)
+                    untokenized = len(self.untokenized_raw_requests)
+                    active = len(self._active_requests)
+                    unfinished_active = [
+                        req for req in self._active_requests
+                        if not req.is_finished()
+                    ]
+                    if now - self._main_loop_last_idle_log > 5.0:
+                        self._main_loop_last_idle_log = now
                         logger.info(
-                            "Main loop idle: waiting=%d gpu_dec=%d cpu_dec=%d",
-                            len(self.scheduler.waiting_q),
-                            len(self.scheduler.gpu_decoding_q),
-                            len(self.scheduler.cpu_decoding_q),
+                            "Main loop idle: waiting=%d gpu_dec=%d cpu_dec=%d untokenized=%d active=%d unfinished_active=%d",
+                            waiting,
+                            gpu_decoding,
+                            cpu_decoding,
+                            untokenized,
+                            active,
+                            len(unfinished_active),
+                        )
+                    if waiting == 0 and gpu_decoding == 0 and cpu_decoding == 0 and untokenized == 0 and unfinished_active:
+                        raise RuntimeError(
+                            "Scheduler has no runnable requests but active requests are still waiting. "
+                            "Pending sample format is (request_id, prompt_len, output_len, max_output_len): "
+                            f"{self._format_active_requests(unfinished_active)}"
                         )
                     await asyncio.sleep(0.001)
                     continue

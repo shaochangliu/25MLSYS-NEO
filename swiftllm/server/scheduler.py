@@ -172,7 +172,14 @@ class Scheduler:
             gpu_only_batch.add_gdec(req)
 
         if not batches[0] and self.num_gpu_blocks > 0:
-            return []
+            if not self.cpu_decoding_q:
+                return []
+            cpu_only_batch = SubBatch(self.predictor)
+            for req in self.cpu_decoding_q:
+                if not budget.check_and_substract(1):
+                    break
+                cpu_only_batch.add_cdec(req)
+            return [cpu_only_batch] if cpu_only_batch else []
 
         # Step 2: adjust the number of prefilled sequences in gpu_only_batch
         while gpu_only_batch.get_num_prefs():

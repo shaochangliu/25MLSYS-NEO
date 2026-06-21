@@ -149,6 +149,7 @@ class TablePerfPredictor(PerfPredictor):
         """
         Linear interpolation of 1D points (x_list, y_list) at x. Assume x <= x_list[-1].
         """
+        assert len(xs) == len(ys), f"Interpolation table length mismatch: {len(xs)} xs vs {len(ys)} ys"
         assert x <= xs[-1], f"x={x} exceeds the maximum {xs[-1]}"
         if x == 0:
             return 0.0

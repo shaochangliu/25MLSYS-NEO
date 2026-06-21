@@ -145,7 +145,7 @@ class ModelProfiler:
         if os.path.exists(result_path):
             with open(result_path, "r") as f:
                 table = json.load(f)
-            if table["S_list"][-1] >= S_list[-1]:
+            if table["S_list"] == S_list:
                 return table["S_list"], table["T_list"]
         else:
             table = {
@@ -198,7 +198,7 @@ class ModelProfiler:
         if os.path.exists(result_path):
             with open(result_path, "r") as f:
                 table = json.load(f)
-            if table["S_list"][-1] >= S_list[-1]:
+            if table["S_list"] == S_list:
                 return table["S_list"], table["T_list"]
             
         print(f"Profiling prefill part with S_list={S_list}...")
@@ -241,7 +241,7 @@ class ModelProfiler:
         if os.path.exists(result_path):
             with open(result_path, "r") as f:
                 res = json.load(f)
-            if res["N_list"][-1] >= N_list[-1]:
+            if res["N_list"] == N_list:
                 return res["N_list"], res["T_list"]
             
         print(f"Profiling GPU attention part with N_list={N_list} ...")
@@ -286,7 +286,11 @@ class ModelProfiler:
         if os.path.exists(result_path):
             with open(result_path, "r") as f:
                 table = json.load(f)
-            if table["S_list"][-1] >= S_list[-1] and table["N_lists"][-1][-1] >= N_lists[-1][-1]:
+            expected_n_agg = self.pp.cdec_N_list_agg
+            cached_n_agg = sorted(list(set(sum(table["N_lists"], []))))
+            if table["S_list"] == S_list and table["N_lists"] == N_lists and \
+                cached_n_agg == expected_n_agg and \
+                all(len(t_list) == len(expected_n_agg) for t_list in table["T_lists"]):
                 return table["S_list"], table["N_lists"], table["T_lists"]
             
         print(f"Profiling CPU attention part with S_list={S_list}, N_lists={N_lists} ...")

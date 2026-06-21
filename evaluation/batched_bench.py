@@ -193,7 +193,8 @@ async def run_case(
     )
 
     engine = swiftllm.AsyncEngine(engine_config)
-    loop_task = None
+    loop_task = None        # inference main loop, should run until all requests are done
+    request_task = None     # submit requests to queue and wait for their completion
     start_wall = 0.0
     end_wall = 0.0
     perf_results = []
@@ -208,10 +209,25 @@ async def run_case(
         raw_requests = [swiftllm.RawRequest(prompt, output_len) for prompt in prompts]
 
         start_wall = time.perf_counter()
-        await asyncio.gather(*(engine.add_request_and_wait(raw_request) for raw_request in raw_requests))
+        request_task = asyncio.gather(*(engine.add_request_and_wait(raw_request) for raw_request in raw_requests))
+        done, _ = await asyncio.wait(
+            {request_task, loop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if loop_task in done:
+            exc = loop_task.exception()
+            request_task.cancel()
+            await asyncio.gather(request_task, return_exceptions=True)
+            if exc is not None:
+                raise exc
+            raise RuntimeError("Engine event loops exited before all requests finished")
+        await request_task
         end_wall = time.perf_counter()
         perf_results = engine.executor.turn_off_perf_monitor_and_flush_results()
     finally:
+        if request_task is not None and not request_task.done():
+            request_task.cancel()
+            await asyncio.gather(request_task, return_exceptions=True)
         if loop_task is not None:
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)

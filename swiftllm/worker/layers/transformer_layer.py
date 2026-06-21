@@ -333,13 +333,15 @@ class LlamaTransformerLayer:
                 
         if batch.num_cdecs > 0:
             oc = self.swapper.o_cpu[:batch.num_cdecs]
-            start_ms = time.perf_counter() * 1e3
-            logger.info(
-                "CPU cdec begin: layer=%d, num_cdecs=%d, seq_lens_tail=%s",
-                cur_layer_id,
-                batch.num_cdecs,
-                batch.seq_lens_list[batch.num_prgds:batch.num_prgds + min(4, batch.num_cdecs)],
-            )
+            log_cpu_cdec = logger.isEnabledFor(logging.DEBUG)
+            if log_cpu_cdec:
+                start_ms = time.perf_counter() * 1e3
+                logger.debug(
+                    "CPU cdec begin: layer=%d, num_cdecs=%d, seq_lens_tail=%s",
+                    cur_layer_id,
+                    batch.num_cdecs,
+                    batch.seq_lens_list[batch.num_prgds:batch.num_prgds + min(4, batch.num_cdecs)],
+                )
             events.pf_time("lnch_m")
             self.events[cur_stage].qkvtr_e.synchronize()
             events.pf_time("cdec_s")
@@ -358,13 +360,14 @@ class LlamaTransformerLayer:
                 oc
             )
             events.pf_time("cdec_e")
-            end_ms = time.perf_counter() * 1e3
-            logger.info(
-                "CPU cdec end: layer=%d, num_cdecs=%d, dur_ms=%.3f",
-                cur_layer_id,
-                batch.num_cdecs,
-                end_ms - start_ms,
-            )
+            if log_cpu_cdec:
+                end_ms = time.perf_counter() * 1e3
+                logger.debug(
+                    "CPU cdec end: layer=%d, num_cdecs=%d, dur_ms=%.3f",
+                    cur_layer_id,
+                    batch.num_cdecs,
+                    end_ms - start_ms,
+                )
             with torch.cuda.stream(self.cpu_communication_stream):
                 o[-batch.num_cdecs:, :].copy_(oc, non_blocking=True)
         else:
