@@ -176,4 +176,5 @@ evaluation/results/
 evaluation/*.pdf
 
 /tmp
-/logs
+/logs*
+nohup.out

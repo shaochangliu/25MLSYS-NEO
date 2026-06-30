@@ -153,6 +153,26 @@ def compute_perf_summary(
     }
 
 
+def derive_finish_time_jsonl_path(output_json: str | None) -> str:
+    if output_json is None:
+        return os.path.join(cur_dir, "neo_finish_time_distribution.finish.jsonl")
+
+    base, ext = os.path.splitext(output_json)
+    if ext:
+        return f"{base}.finish.jsonl"
+    return f"{output_json}.finish.jsonl"
+
+
+def write_finish_time_distribution(path: str, finish_records: list[tuple[int, float]]) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for request_index, elapsed_time in sorted(finish_records):
+            f.write(json.dumps({
+                "request_index": request_index,
+                "elapsed_time": round(elapsed_time, 2),
+            }) + "\n")
+
+
 async def run_case(
     model_path: str,
     num_prompts: int,
@@ -170,6 +190,7 @@ async def run_case(
     max_blocks_per_seq: int = -1,
     extra_layer_for_cprf: bool = False,
     tensor_parallel_degree: int = 1,
+    finish_time_jsonl: str | None = None,
 ) -> dict:
     profile_dir = os.path.join(neo_dir, "profile_results") + os.sep
 
@@ -198,6 +219,7 @@ async def run_case(
     start_wall = 0.0
     end_wall = 0.0
     perf_results = []
+    finish_records = []
 
     try:
         await engine.initialize_async()
@@ -208,8 +230,17 @@ async def run_case(
         prompts = [[DEFAULT_PROMPT_TOKEN] * input_len for _ in range(num_prompts)]
         raw_requests = [swiftllm.RawRequest(prompt, output_len) for prompt in prompts]
 
+        async def add_request_and_record(request_index: int, raw_request: swiftllm.RawRequest):
+            result = await engine.add_request_and_wait(raw_request)
+            if finish_time_jsonl is not None:
+                finish_records.append((request_index, time.perf_counter() - start_wall))
+            return result
+
         start_wall = time.perf_counter()
-        request_task = asyncio.gather(*(engine.add_request_and_wait(raw_request) for raw_request in raw_requests))
+        request_task = asyncio.gather(*(
+            add_request_and_record(request_index, raw_request)
+            for request_index, raw_request in enumerate(raw_requests)
+        ))
         done, _ = await asyncio.wait(
             {request_task, loop_task},
             return_when=asyncio.FIRST_COMPLETED,
@@ -224,6 +255,8 @@ async def run_case(
         await request_task
         end_wall = time.perf_counter()
         perf_results = engine.executor.turn_off_perf_monitor_and_flush_results()
+        if finish_time_jsonl is not None:
+            write_finish_time_distribution(finish_time_jsonl, finish_records)
     finally:
         if request_task is not None and not request_task.done():
             request_task.cancel()
@@ -274,6 +307,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--extra-layer-for-cprf", action="store_true", help="Enable extra layer for CPU prefills")
     parser.add_argument("--library-path", type=str, default=None, help="Override CPU kernel library path from config")
     parser.add_argument("--output-json", type=str, default=None, help="Optional path to save the benchmark summary as JSON")
+    parser.add_argument(
+        "--record-finish-time-distribution",
+        action="store_true",
+        help="Write per-request finish elapsed times to a JSONL file next to --output-json",
+    )
     return parser.parse_args()
 
 
@@ -308,6 +346,9 @@ async def main() -> int:
         gpu_mem_utilization=args.gpu_mem_utilization,
         num_gpu_blocks_override=args.num_gpu_blocks_override,
         swap_space=args.swap_space,
+        finish_time_jsonl=derive_finish_time_jsonl_path(args.output_json)
+        if args.record_finish_time_distribution
+        else None,
     )
 
     print(json.dumps(summary, indent=2))

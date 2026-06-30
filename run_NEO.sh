@@ -4,7 +4,7 @@ set -e
 
 REPO_DIR="/scratch/sliu27/25MLSYS-NEO"
 
-LOG_DIR="$REPO_DIR/logs"
+LOG_DIR="$REPO_DIR/logs_largerPP"
 
 cd "$REPO_DIR"
 mkdir -p "$LOG_DIR"
@@ -64,10 +64,12 @@ runs=(
     "llama3.1-8b:/scratch/sliu27/models/HF/llama3.1-8b:1024:256:48"
     "llama3.1-8b:/scratch/sliu27/models/HF/llama3.1-8b:256:1024:48"
     "llama3.1-8b:/scratch/sliu27/models/HF/llama3.1-8b:512:512:60"
+    "llama3.1-8b:/scratch/sliu27/models/HF/llama3.1-8b:1024:64:56"
+    "llama3.1-8b:/scratch/sliu27/models/HF/llama3.1-8b:1024:32:58"
 
-    "llama2-7b:/scratch/sliu27/models/HF/llama2-7b:1024:256:14"
-    "llama2-7b:/scratch/sliu27/models/HF/llama2-7b:256:1024:14"
-    "llama2-7b:/scratch/sliu27/models/HF/llama2-7b:512:512:18"
+    # "llama2-7b:/scratch/sliu27/models/HF/llama2-7b:1024:256:14"
+    # "llama2-7b:/scratch/sliu27/models/HF/llama2-7b:256:1024:14"
+    # "llama2-7b:/scratch/sliu27/models/HF/llama2-7b:512:512:18"
 )
 
 clear_profile_results() {
@@ -95,6 +97,7 @@ run_neo_cmd() {
         --max-tokens-in-batch "$max_tokens_in_batch"
         # --max-batch-size "$MAX_BATCH_SIZE"
         --extra-layer-for-cprf
+        --record-finish-time-distribution
         --output-json "$json_file"
     )
 
