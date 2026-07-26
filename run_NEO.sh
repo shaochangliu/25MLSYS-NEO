@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
-REPO_DIR="/scratch/sliu27/25MLSYS-NEO"
-
+REPO_DIR="/home/sliu27/baseline/NEO"
 LOG_DIR="$REPO_DIR/logs_largerPP"
+VENV_ACTIVATE="$REPO_DIR/.venv/bin/activate"
 
 cd "$REPO_DIR"
 mkdir -p "$LOG_DIR"
 
-if [[ -f "$REPO_DIR/env.sh" ]]; then
-    # shellcheck source=/dev/null
-    source "$REPO_DIR/env.sh"
+if [[ ! -f "$VENV_ACTIVATE" ]]; then
+    echo "[Error] Expected venv activation script at $VENV_ACTIVATE" >&2
+    exit 1
 fi
+
+source "$VENV_ACTIVATE"
+export TORCH_CUDA_ARCH_LIST=9.0
 
 GPU_MEM_UTILIZATION=0.242 # 23GB
 SWAP_SPACE=60

@@ -20,11 +20,11 @@ Intel ISPC compiler == 1.23, which can be installed by `sudo snap install ispc -
 
 1. Clone the NEO repository and `cd` into the repo.
 
-2. Install dependencies by `pip install -r requirements.txt.`
+2. Install dependencies by `pip install -r requirements.txt`; install vllm_flash_attn-2.6.1 and triton-3.0.0 from source
 
 3. Install the swiftLLM library to your local environment by `pip install -e .`
 
-4. Build and install auxiliary GPU operators library by `pip install -e csrc`
+4. Build and install auxiliary GPU operators library by `pip install -e csrc --no-build-isolation`
 
 5. Build the CPU operator library by 
 
